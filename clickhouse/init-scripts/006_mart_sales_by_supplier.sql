@@ -27,3 +27,14 @@ SELECT
 FROM  lab2_reports.sales_by_supplier
 GROUP BY
     country;
+
+-- Средняя цена товаров от каждого поставщика
+CREATE VIEW lab2_reports.v_supplier_avg_prices AS
+SELECT
+    supplier_name,
+    country,
+    avg_price,
+    sales_count
+FROM lab2_reports.sales_by_supplier
+ORDER BY
+    avg_price DESC;

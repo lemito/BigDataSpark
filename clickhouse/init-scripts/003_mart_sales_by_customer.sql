@@ -31,7 +31,7 @@ FROM  lab2_reports.sales_by_customer
 GROUP BY
     country;
 
--- Средний чек (уже есть в таблице, создаем удобный вид)
+-- Средний чек
 CREATE VIEW lab2_reports.v_customer_avg_check AS
 SELECT
     customer_name,

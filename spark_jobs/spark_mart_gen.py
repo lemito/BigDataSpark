@@ -2,35 +2,23 @@ from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 
 spark = (
-    SparkSession.builder.appName("SnowflakeToClickHouse")
+    SparkSession.builder.appName("MartsToClickHouse")
     .config("spark.sql.catalog.clickhouse", "com.clickhouse.spark.ClickHouseCatalog")
     .config("spark.sql.catalog.clickhouse.host", "clickhouse")
-    .config("spark.sql.catalog.clickhouse.http_port", "8123")
-    .config("spark.sql.catalog.clickhouse.user", "meow")
-    .config("spark.sql.catalog.clickhouse.password", "UwU")
     .getOrCreate()
 )
-spark.sparkContext.setLogLevel("WARN")
 
 PG_URL = "jdbc:postgresql://postgres:5432/spark_db"
 PG_PROPS = {"user": "meow", "password": "UwU", "driver": "org.postgresql.Driver"}
 
 
 def pg_read(table: str) -> DataFrame:
-    print(f"Reading {table} from PostgreSQL...")
     return spark.read.jdbc(url=PG_URL, table=f"{table}", properties=PG_PROPS)
 
 
 def ch_write(df: DataFrame, table: str) -> None:
-    (
-        df.writeTo(f"clickhouse.lab2_reports.{table}")
-        .option("batch_size", "50000")
-        .append()
-    )
-    print(f"Written {table} to clickhouse...")
+    df.writeTo(f"clickhouse.lab2_reports.{table}").append()
 
-
-print("Reading snowflake schema from PostgreSQL...")
 
 fact = pg_read("fact_sales").cache()
 dim_products = pg_read("dim_products")
@@ -40,198 +28,113 @@ dim_suppliers = pg_read("dim_suppliers")
 dim_prod_cats = pg_read("dim_product_categories")
 dim_countries = pg_read("dim_countries")
 dim_cities = pg_read("dim_cities")
-dim_states = pg_read("dim_states")
 
-#  sales_by_product
-#     Schema: product_id, product_name, category, total_revenue,
-#             sales_count, avg_rating, review_count
-print("Building sales_by_product...")
 
 sales_by_product = (
-    fact.join(
-        dim_products.select(
-            "product_id",
-            F.col("name").alias("product_name"),
-            "category_id",
-            "rating",
-            "reviews",
-        ),
-        "product_id",
+    fact.join(dim_products.alias("p"), "product_id")
+    .join(dim_prod_cats.alias("pc"), F.col("p.category_id") == F.col("pc.category_id"))
+    .groupBy(
+        F.col("p.product_id"),
+        F.col("p.name").alias("product_name"),
+        F.col("pc.name").alias("category"),
     )
-    .join(
-        dim_prod_cats.select(
-            "category_id",
-            F.col("name").alias("category"),
-        ),
-        "category_id",
-    )
-    .groupBy("product_id", "product_name", "category")
     .agg(
-        F.round(F.sum("total_price"), 2).cast("double").alias("total_revenue"),
-        F.count("*").cast("int").alias("sales_count"),
-        F.round(F.avg("rating"), 2).cast("float").alias("avg_rating"),
-        F.sum("reviews").cast("int").alias("review_count"),
+        F.sum("total_price").cast("double").alias("total_revenue"),
+        F.count("*").cast("integer").alias("sales_count"),
+        F.avg("p.rating").cast("float").alias("avg_rating"),
+        F.sum("p.reviews").cast("integer").alias("review_count"),
     )
 )
-
 ch_write(sales_by_product, "sales_by_product")
 
 
-#  sales_by_customer
-#     Schema: customer_id, customer_name, country, total_revenue,
-#             order_count, avg_check
-print("Building sales_by_customer...")
-
-customer_geo = (
-    dim_customers.join(dim_cities.select("city_id", "state_id"), "city_id")
-    .join(dim_states.select("state_id", "country_id"), "state_id")
-    .join(
-        dim_countries.select("country_id", F.col("name").alias("country")), "country_id"
-    )
-    .select(
-        "customer_id",
-        F.concat_ws(" ", "first_name", "last_name").alias("customer_name"),
-        "country",
-    )
-)
-
 sales_by_customer = (
-    fact.join(customer_geo, "customer_id")
-    .groupBy("customer_id", "customer_name", "country")
-    .agg(
-        F.round(F.sum("total_price"), 2).cast("double").alias("total_revenue"),
-        F.count("*").cast("int").alias("order_count"),
+    fact.join(dim_customers.alias("cu"), "customer_id")
+    .join(dim_countries.alias("cn"), F.col("cu.country_id") == F.col("cn.country_id"))
+    .groupBy(
+        F.col("cu.customer_id"),
+        F.concat_ws(" ", F.col("cu.first_name"), F.col("cu.last_name")).alias(
+            "customer_name"
+        ),
+        F.col("cn.name").alias("country"),
     )
-    .withColumn(
-        "avg_check",
-        F.round(F.col("total_revenue") / F.col("order_count"), 2).cast("double"),
+    .agg(
+        F.sum("total_price").cast("double").alias("total_revenue"),
+        F.count("*").cast("integer").alias("order_count"),
+        F.avg("total_price").cast("double").alias("avg_check"),
     )
 )
-
 ch_write(sales_by_customer, "sales_by_customer")
 
 
-#  sales_by_time
-#     Schema: year, month, total_revenue, order_count, item_count,
-#             avg_items_per_order
-print("Building sales_by_time...")
 sales_by_time = (
-    fact.filter(F.col("date").isNotNull())
-    .withColumn("year", F.year("date").cast("int"))
-    .withColumn("month", F.month("date").cast("int"))
+    fact.withColumn("year", F.year("date"))
+    .withColumn("month", F.month("date"))
     .groupBy("year", "month")
     .agg(
-        F.round(F.sum("total_price"), 2).cast("double").alias("total_revenue"),
-        F.count("*").cast("int").alias("order_count"),
-        F.sum("quantity").cast("int").alias("item_count"),
+        F.sum("total_price").cast("double").alias("total_revenue"),
+        F.count("*").cast("integer").alias("order_count"),
+        F.sum("quantity").cast("integer").alias("item_count"),
+        F.avg("quantity").cast("float").alias("avg_items_per_order"),
     )
-    .withColumn(
-        "avg_items_per_order",
-        F.round(F.col("item_count") / F.col("order_count"), 2).cast("float"),
-    )
-    .orderBy("year", "month")
 )
-
 ch_write(sales_by_time, "sales_by_time")
 
 
-#  sales_by_store
-#     Schema: store_id, store_name, city, country, total_revenue,
-#             order_count, avg_check
-print("Building sales_by_store...")
-store_geo = (
-    dim_stores.join(
-        dim_cities.select("city_id", "state_id", F.col("name").alias("city")), "city_id"
-    )
-    .join(dim_states.select("state_id", "country_id"), "state_id")
-    .join(
-        dim_countries.select("country_id", F.col("name").alias("country")), "country_id"
-    )
-    .select(
-        "store_id",
-        F.col("name").alias("store_name"),
-        "city",
-        "country",
-    )
-)
-
 sales_by_store = (
-    fact.join(store_geo, "store_id")
-    .groupBy("store_id", "store_name", "city", "country")
-    .agg(
-        F.round(F.sum("total_price"), 2).cast("double").alias("total_revenue"),
-        F.count("*").cast("int").alias("order_count"),
+    fact.join(dim_stores.alias("st"), "store_id")
+    .join(dim_cities.alias("ci"), F.col("st.city_id") == F.col("ci.city_id"))
+    .join(dim_countries.alias("cn"), F.col("st.country_id") == F.col("cn.country_id"))
+    .groupBy(
+        F.col("st.store_id"),
+        F.col("st.name").alias("store_name"),
+        F.col("ci.name").alias("city"),
+        F.col("cn.name").alias("country"),
     )
-    .withColumn(
-        "avg_check",
-        F.round(F.col("total_revenue") / F.col("order_count"), 2).cast("double"),
+    .agg(
+        F.sum("total_price").cast("double").alias("total_revenue"),
+        F.count("*").cast("integer").alias("order_count"),
+        F.avg("total_price").cast("double").alias("avg_check"),
     )
 )
-
 ch_write(sales_by_store, "sales_by_store")
 
 
-#  sales_by_supplier
-#     Schema: supplier_id, supplier_name, country, total_revenue,
-#             sales_count, avg_price
-print("Building sales_by_supplier...")
-supplier_geo = (
-    dim_suppliers.join(dim_cities.select("city_id", "state_id"), "city_id")
-    .join(dim_states.select("state_id", "country_id"), "state_id")
-    .join(
-        dim_countries.select("country_id", F.col("name").alias("country")), "country_id"
+sales_by_supplier = (
+    fact.join(dim_products.alias("p"), "product_id")
+    .join(dim_suppliers.alias("su"), F.col("p.supplier_id") == F.col("su.supplier_id"))
+    .join(dim_countries.alias("cn"), F.col("su.country_id") == F.col("cn.country_id"))
+    .groupBy(
+        F.col("su.supplier_id"),
+        F.col("su.name").alias("supplier_name"),
+        F.col("cn.name").alias("country"),
     )
-    .select(
-        "supplier_id",
-        F.col("name").alias("supplier_name"),
-        "country",
+    .agg(
+        F.sum("total_price").cast("double").alias("total_revenue"),
+        F.count("*").cast("integer").alias("sales_count"),
+        F.avg("p.price").cast("double").alias("avg_price"),
     )
 )
-
-fact_with_supplier = fact.join(
-    dim_products.select("product_id", "supplier_id", "price"), "product_id"
-).join(supplier_geo, "supplier_id")
-
-sales_by_supplier = fact_with_supplier.groupBy(
-    "supplier_id", "supplier_name", "country"
-).agg(
-    F.round(F.sum("total_price"), 2).cast("double").alias("total_revenue"),
-    F.count("*").cast("int").alias("sales_count"),
-    F.round(F.avg("price"), 2).cast("double").alias("avg_price"),
-)
-
 ch_write(sales_by_supplier, "sales_by_supplier")
 
 
-#  product_quality
-#     Schema: product_id, product_name, category, avg_rating,
-#             review_count, sales_count
-print("Building product_quality...")
-
 product_quality = (
-    fact.join(
-        dim_products.select(
-            "product_id",
-            F.col("name").alias("product_name"),
-            "category_id",
-            "rating",
-            "reviews",
+    dim_products.alias("p")
+    .join(dim_prod_cats.alias("pc"), F.col("p.category_id") == F.col("pc.category_id"))
+    .join(
+        fact.groupBy("product_id").agg(
+            F.count("*").cast("integer").alias("sales_count")
         ),
         "product_id",
+        "left",
     )
-    .join(
-        dim_prod_cats.select("category_id", F.col("name").alias("category")),
-        "category_id",
-    )
-    .groupBy("product_id", "product_name", "category")
-    .agg(
-        F.round(F.avg("rating"), 2).cast("float").alias("avg_rating"),
-        F.sum("reviews").cast("int").alias("review_count"),
-        F.count("*").cast("int").alias("sales_count"),
+    .select(
+        F.col("p.product_id"),
+        F.col("p.name").alias("product_name"),
+        F.col("pc.name").alias("category"),
+        F.col("p.rating").cast("float").alias("avg_rating"),
+        F.col("p.reviews").cast("integer").alias("review_count"),
+        F.coalesce(F.col("sales_count"), F.lit(0)).alias("sales_count"),
     )
 )
-
 ch_write(product_quality, "product_quality")
-
-print("\nUwU DONE")
-spark.stop()

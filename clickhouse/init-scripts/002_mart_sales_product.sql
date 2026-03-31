@@ -14,14 +14,10 @@ ORDER BY
 
 -- Топ-10 самых продаваемых продуктов
 CREATE VIEW lab2_reports.v_top_10_products AS
-SELECT
-    product_name,
-    sales_count,
-    total_revenue
-FROM  lab2_reports.sales_by_product
-ORDER BY
-    sales_count DESC
-LIMIT  10;
+SELECT product_name, sum(sales_count) as total_sales, sum(total_revenue) as total_rev
+FROM lab2_reports.sales_by_product
+GROUP BY product_name
+ORDER BY total_sales DESC LIMIT 10;
 
 -- Общая выручка по категориям
 CREATE VIEW lab2_reports.v_revenue_by_category AS

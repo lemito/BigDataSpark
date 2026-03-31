@@ -32,3 +32,15 @@ FROM  lab2_reports.sales_by_store
 GROUP BY
     country,
     city;
+
+-- Средний чек для каждого магазина
+CREATE VIEW lab2_reports.v_store_avg_check AS
+SELECT
+    store_name,
+    city,
+    country,
+    avg_check,
+    order_count
+FROM lab2_reports.sales_by_store
+ORDER BY
+    avg_check DESC;
