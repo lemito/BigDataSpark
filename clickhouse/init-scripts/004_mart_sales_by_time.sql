@@ -24,13 +24,20 @@ ORDER BY
 
 -- Сравнение выручки за разные периоды
 CREATE VIEW lab2_reports.v_revenue_comparison AS
-SELECT 
-    year, 
-    month, 
+SELECT
+    year,
+    month,
     total_revenue,
-    lagInFrame(total_revenue) OVER (ORDER BY year ASC, month ASC) as prev_month_revenue,
-    total_revenue - prev_month_revenue as delta
-FROM lab2_reports.sales_by_time;
+    prev_month_revenue,
+    total_revenue - prev_month_revenue AS delta
+FROM (
+    SELECT
+        year,
+        month,
+        total_revenue,
+        lagInFrame(total_revenue) OVER (ORDER BY year ASC, month ASC) AS prev_month_revenue
+    FROM lab2_reports.sales_by_time
+);
 
 -- Средний размер заказа по месяцам
 CREATE VIEW lab2_reports.v_monthly_order_size AS
