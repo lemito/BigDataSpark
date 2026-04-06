@@ -13,6 +13,11 @@ services:
           - ./source_data:/docker-entrypoint-initdb.d
         networks:
           - meowork
+        healthcheck:
+          test: ["CMD-SHELL", "pg_isready -U meow -d spark_db"]
+          interval: 5s
+          timeout: 5s
+          retries: 5
 
     clickhouse:
       image: clickhouse/clickhouse-server:latest
@@ -32,6 +37,11 @@ services:
         - CLICKHOUSE_PASSWORD=UwU
       networks:
         - meowork
+      healthcheck:
+          test: ["CMD-SHELL", "clickhouse-client --user meow --password UwU --query 'SELECT 1'"]
+          interval: 5s
+          timeout: 5s
+          retries: 5
 
     spark-master:
       image: apache/spark:latest
@@ -49,13 +59,19 @@ services:
         - ./jars:/jars
       networks:
         - meowork
+      depends_on:
+          postgres:
+            condition: service_healthy
+          clickhouse:
+            condition: service_healthy
 
     spark-worker:
       image: apache/spark:latest
       container_name: spark-worker
       entrypoint: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077"]
       depends_on:
-        - spark-master
+          spark-master:
+            condition: service_started
       environment:
         - SPARK_WORKER_MEMORY=1g
         - SPARK_WORKER_CORES=1
@@ -65,6 +81,42 @@ services:
       networks:
         - meowork
 
+spark-submit:
+    image: apache/spark:latest
+    container_name: spark-submit
+    volumes:
+      - ./spark_jobs:/scripts
+      - ./jars:/jars
+    environment:
+      - SPARK_MASTER=spark://spark-master:7077
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      spark-master:
+        condition: service_started
+    entrypoint: >
+          /bin/sh -c "
+            echo 'Step 1: Snowflake ETL (Postgres)...' &&
+            /opt/spark/bin/spark-submit \
+              --master $$SPARK_MASTER \
+              --jars /jars/postgresql-42.7.10.jar \
+              /scripts/snowflake_etl.py &&
+            
+            echo 'Step 2: ClickHouse Marts Generation...' &&
+            /opt/spark/bin/spark-submit \
+              --master $$SPARK_MASTER \
+              --jars /jars/postgresql-42.7.10.jar,/jars/clickhouse-spark-runtime-4.0_2.13-0.10.0.jar \
+              --conf spark.sql.catalog.clickhouse=com.clickhouse.spark.ClickHouseCatalog \
+              --conf spark.sql.catalog.clickhouse.host=clickhouse \
+              --conf spark.sql.catalog.clickhouse.http_port=8123 \
+              --conf spark.sql.catalog.clickhouse.user=meow \
+              --conf spark.sql.catalog.clickhouse.password=UwU \
+              /scripts/spark_mart_gen.py
+          "
+    networks:
+      - meowork
 
     # ydb-local:
     #   image: cr.yandex/yc/yandex-docker-local-ydb:latest 
