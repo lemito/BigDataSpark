@@ -41,7 +41,8 @@ services:
       test: ["CMD-SHELL", "clickhouse-client --user meow --password UwU --query 'SELECT 1'"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 20
+      start_period: 30s
 
   spark-master:
     image: apache/spark:latest
@@ -96,14 +97,16 @@ services:
         condition: service_healthy
       spark-master:
         condition: service_started
-    entrypoint: >
-      /bin/sh -c "
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
         echo 'Step 1: Snowflake ETL (Postgres)...' &&
         /opt/spark/bin/spark-submit \
           --master $$SPARK_MASTER \
           --jars /jars/postgresql-42.7.10.jar \
           /scripts/snowflake_etl.py &&
-        
+ 
         echo 'Step 2: ClickHouse Marts Generation...' &&
         /opt/spark/bin/spark-submit \
           --master $$SPARK_MASTER \
@@ -114,21 +117,8 @@ services:
           --conf spark.sql.catalog.clickhouse.user=meow \
           --conf spark.sql.catalog.clickhouse.password=UwU \
           /scripts/spark_mart_gen.py
-      "
     networks:
       - meowork
-
-    # ydb-local:
-    #   image: cr.yandex/yc/yandex-docker-local-ydb:latest 
-    #   container_name: ydb-local
-    #   restart: unless-stopped
-    #   ports:
-    #     - "2136:2136"
-    #     - "8765:8765"
-    #     - "5432:5432"
-    #   environment:
-    #     - YDB_USE_IN_MEMORY_PDISKS=true 
-    #   command: ["--no-healthcheck"]
 
 networks:
   meowork:
